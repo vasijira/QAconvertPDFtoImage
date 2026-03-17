@@ -1,5 +1,5 @@
 import streamlit as st
-from pdf2image import convert_from_path
+import pypdfium2 as pdfium
 from PIL import Image, ImageFilter, ImageEnhance, ImageDraw
 import numpy as np
 import io
@@ -17,7 +17,7 @@ with st.sidebar:
     out_fmt = st.selectbox("Output Format", ["PDF", "PNG", "JPG"])
     overlay_color = st.color_picker("เลือกสี Dim", "#FFEB3B") if 'dimcolor' in selected_keys else "#FFEB3B"
 
-# --- Effect Functions ---
+# --- Effect Functions (เหมือนเดิมที่คุณมี) ---
 def apply_effect(img, mode, val, color_hex):
     temp = img.copy()
     if mode == 'skew': return temp.rotate(val, expand=True, fillcolor=(255, 255, 255))
@@ -42,7 +42,7 @@ def apply_effect(img, mode, val, color_hex):
         return Image.blend(temp, Image.new('RGB', temp.size, (r, g, b)), min(val/10, 0.9))
     return temp
 
-# --- Logic ---
+# --- Logic (เปลี่ยนการอ่าน PDF) ---
 uploaded_file = st.file_uploader("Upload PDF or Image", type=["pdf", "png", "jpg", "jpeg"])
 
 if uploaded_file and selected_keys:
@@ -50,28 +50,30 @@ if uploaded_file and selected_keys:
         zip_buffer = io.BytesIO()
         try:
             with st.spinner('Processing...'):
-                content = uploaded_file.read()
+                raw_data = uploaded_file.read()
                 if uploaded_file.name.lower().endswith('.pdf'):
-                    # ใช้ convert_from_path ปกติเพราะ Poppler มีแล้ว
-                    pages = convert_from_path(content, 300)
+                    # ใช้ pypdfium2 แทน pdf2image (ไม่ต้องใช้ Poppler)
+                    pdf = pdfium.PdfDocument(raw_data)
+                    pages = [pdf[i].render(scale=2).to_pil() for i in range(len(pdf))]
                 else:
-                    pages = [Image.open(io.BytesIO(content)).convert("RGB")]
+                    pages = [Image.open(io.BytesIO(raw_data)).convert("RGB")]
                 
                 base_name = uploaded_file.name.rsplit('.', 1)[0]
                 with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
                     for mode in selected_keys:
-                        imgs = [apply_effect(p, mode, intensity, overlay_color) for p in pages]
+                        processed_imgs = [apply_effect(p, mode, intensity, overlay_color) for p in pages]
                         if out_fmt == "PDF":
                             buf = io.BytesIO()
-                            imgs[0].save(buf, format="PDF", save_all=True, append_images=imgs[1:])
+                            processed_imgs[0].save(buf, format="PDF", save_all=True, append_images=processed_imgs[1:])
                             zip_file.writestr(f"{base_name}_{mode}.pdf", buf.getvalue())
                         else:
-                            for idx, img in enumerate(imgs):
+                            for idx, img in enumerate(processed_imgs):
                                 buf = io.BytesIO()
                                 img.save(buf, format="JPEG" if out_fmt=="JPG" else "PNG")
-                                zip_file.writestr(f"{base_name}_{mode}_p{idx+1}.{out_fmt.lower()}", buf.getvalue())
+                                suffix = f"_p{idx+1}" if len(processed_imgs) > 1 else ""
+                                zip_file.writestr(f"{base_name}_{mode}{suffix}.{out_fmt.lower()}", buf.getvalue())
                 
-                st.success("Success!")
-                st.download_button("📥 Download ZIP", zip_buffer.getvalue(), f"{base_name}_test.zip")
+                st.success("สำเร็จแล้ว!")
+                st.download_button("📥 Download ZIP", zip_buffer.getvalue(), f"{base_name}_test_cases.zip")
         except Exception as final_e:
-            st.error(f"Error: {str(final_e)}") # ใช้ final_e ให้ตรงกับชื่อตัวแปรที่ดักไว้
+            st.error(f"Error: {str(final_e)}")
